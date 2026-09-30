@@ -2,7 +2,13 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from tracker_app.model import Interval, Section, TrackerModel
+from tracker_app.model import (
+    Interval,
+    Section,
+    TrackerModel,
+    format_duration,
+    parse_duration,
+)
 
 
 def make_dt(offset_seconds: float = 0) -> datetime:
@@ -128,3 +134,84 @@ def test_is_running_reflects_current_section_state():
     assert model.is_running()
     model.stop(make_dt(5))
     assert not model.is_running()
+
+
+# ---------------------------------------------------------------------------
+# parse_duration
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        ("+7m", 420.0),
+        ("7", 420.0),
+        ("-30s", -30.0),
+        ("1h30m", 5400.0),
+        ("1h 30 m", 5400.0),
+        ("1.5h", 5400.0),
+        ("2:15", 135.0),
+        ("1:02:15", 3735.0),
+        ("-1:00", -60.0),
+    ],
+)
+def test_parse_duration_accepts(text, expected):
+    assert parse_duration(text) == expected
+
+
+@pytest.mark.parametrize("text", ["", "   ", "abc", "5x", "+", "1:2:3:4", "h"])
+def test_parse_duration_rejects(text):
+    assert parse_duration(text) is None
+
+
+def test_format_duration_signs():
+    assert format_duration(420) == "+0:07:00"
+    assert format_duration(-3735) == "-1:02:15"
+
+
+# ---------------------------------------------------------------------------
+# TrackerModel.adjust
+# ---------------------------------------------------------------------------
+
+def test_adjust_adds_to_elapsed():
+    model = TrackerModel.new("test")
+    model.adjust(420, make_dt(0))
+    assert model.elapsed_seconds(make_dt(0)) == 420.0
+
+
+def test_adjust_does_not_touch_intervals_of_running_timer():
+    model = TrackerModel.new("test")
+    model.start(make_dt(0))
+    model.adjust(420, make_dt(300))
+    assert model.current_section.last_start == make_dt(0)
+    assert model.current_section.intervals == []
+    assert model.elapsed_seconds(make_dt(300)) == 720.0  # 5 min run + 7 min
+
+
+def test_adjustments_accumulate_and_can_be_negative():
+    model = TrackerModel.new("test")
+    model.adjust(420, make_dt(0))
+    model.adjust(-60, make_dt(10), reason="too much")
+    assert len(model.current_section.adjustments) == 2
+    assert model.current_section.adjustment_seconds() == 360.0
+    assert model.current_section.adjustments[1].reason == "too much"
+
+
+def test_adjust_ignores_zero():
+    model = TrackerModel.new("test")
+    model.adjust(0, make_dt(0))
+    assert model.current_section.adjustments == []
+
+
+def test_elapsed_never_goes_below_zero():
+    model = TrackerModel.new("test")
+    model.adjust(-600, make_dt(0))
+    assert model.elapsed_seconds(make_dt(0)) == 0.0
+
+
+def test_reset_leaves_adjustments_in_old_section():
+    model = TrackerModel.new("test")
+    model.adjust(420, make_dt(0))
+    model.reset(make_dt(10))
+    assert model.sections[0].adjustment_seconds() == 420.0
+    assert model.current_section.adjustments == []
+    assert model.elapsed_seconds(make_dt(10)) == 0.0

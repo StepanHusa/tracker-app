@@ -10,11 +10,11 @@ gi.require_version("Gtk", "3.0")
 gi.require_version("Gdk", "3.0")
 from gi.repository import Gdk, GLib, Gtk
 
-from tracker_app.model import TrackerModel
+from tracker_app.model import TrackerModel, format_duration, parse_duration
 
 log = logging.getLogger(__name__)
 
-_HINT = "Space=start/stop   r=reset   n=new   d/Del=delete   F2=rename   Ctrl+U=undo   Esc=close"
+_HINT = "Space=start/stop   r=reset   e=edit time   m=note   n=new   d/Del=delete   F2=rename   Ctrl+U=undo   Esc=close"
 
 
 class TrackerRow(Gtk.ListBoxRow):
@@ -24,12 +24,16 @@ class TrackerRow(Gtk.ListBoxRow):
         on_start_stop: Callable[["TrackerRow"], None],
         on_reset: Callable[["TrackerRow"], None],
         on_rename_commit: Callable[["TrackerRow", str], None],
+        on_note: Callable[["TrackerRow"], None],
+        on_edit_time: Callable[["TrackerRow"], None],
     ) -> None:
         super().__init__()
         self.model = model
         self._on_start_stop = on_start_stop
         self._on_reset = on_reset
         self._on_rename_commit = on_rename_commit
+        self._on_note = on_note
+        self._on_edit_time = on_edit_time
         self._renaming = False
         self._build()
 
@@ -67,6 +71,15 @@ class TrackerRow(Gtk.ListBoxRow):
         reset_btn = Gtk.Button(label="↺")
         reset_btn.connect("clicked", lambda _: self._on_reset(self))
 
+        # Edit time button
+        self._edit_time_btn = Gtk.Button(label="±")
+        self._edit_time_btn.set_tooltip_text("Adjust elapsed time")
+        self._edit_time_btn.connect("clicked", lambda _: self._on_edit_time(self))
+
+        # Note button
+        self._note_btn = Gtk.Button(label="✎")
+        self._note_btn.connect("clicked", lambda _: self._on_note(self))
+
         # Last reset date
         self._date_label = Gtk.Label()
         self._date_label.set_width_chars(11)
@@ -78,6 +91,8 @@ class TrackerRow(Gtk.ListBoxRow):
         box.pack_start(self._elapsed_label, False, False, 0)
         box.pack_start(self._toggle_btn, False, False, 0)
         box.pack_start(reset_btn, False, False, 0)
+        box.pack_start(self._edit_time_btn, False, False, 0)
+        box.pack_start(self._note_btn, False, False, 0)
         box.pack_start(self._date_label, False, False, 0)
 
         self.add(box)
@@ -89,6 +104,14 @@ class TrackerRow(Gtk.ListBoxRow):
         m = int((elapsed % 3600) // 60)
         s = int(elapsed % 60)
         self._elapsed_label.set_text(f"{h:02d}:{m:02d}:{s:02d}")
+
+        adjusted = self.model.current_section.adjustment_seconds()
+        if adjusted:
+            self._elapsed_label.set_tooltip_text(
+                f"includes manual adjustment {format_duration(adjusted)}"
+            )
+        else:
+            self._elapsed_label.set_tooltip_text(None)
         self._toggle_btn.set_label("■" if self.model.is_running() else "▶")
 
         reset_date = self.model.last_reset_date()
@@ -98,6 +121,12 @@ class TrackerRow(Gtk.ListBoxRow):
             self._date_label.set_text("")
 
         self._name_label.set_text(self.model.name)
+
+        note_ctx = self._note_btn.get_style_context()
+        if self.model.current_section.note:
+            note_ctx.add_class("suggested-action")
+        else:
+            note_ctx.remove_class("suggested-action")
 
     # ------------------------------------------------------------------
     # Rename
@@ -214,6 +243,8 @@ class TrackerWindow(Gtk.Window):
             on_start_stop=self._action_toggle,
             on_reset=self._action_reset,
             on_rename_commit=self._action_rename,
+            on_note=self._action_note,
+            on_edit_time=self._action_edit_time,
         )
         row.connect("button-press-event", self._on_row_double_click)
         self._listbox.add(row)
@@ -267,6 +298,99 @@ class TrackerWindow(Gtk.Window):
         row.model.name = new_name
         self._on_save(row.model)
         row.refresh(datetime.now())
+
+    def _action_note(self, row: TrackerRow) -> None:
+        dialog = Gtk.Dialog(
+            title="Section Note",
+            transient_for=self,
+            modal=True,
+        )
+        dialog.add_buttons(
+            Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL,
+            Gtk.STOCK_OK, Gtk.ResponseType.OK,
+        )
+        dialog.set_default_response(Gtk.ResponseType.OK)
+
+        entry = Gtk.Entry()
+        entry.set_placeholder_text("Note for this session")
+        entry.set_text(row.model.current_section.note)
+        entry.set_activates_default(True)
+        entry.set_width_chars(40)
+        entry.set_margin_top(8)
+        entry.set_margin_bottom(8)
+        entry.set_margin_start(8)
+        entry.set_margin_end(8)
+
+        dialog.get_content_area().add(entry)
+        dialog.show_all()
+        response = dialog.run()
+        text = entry.get_text().strip()
+        dialog.destroy()
+
+        if response == Gtk.ResponseType.OK:
+            now = datetime.now()
+            self._push_undo_mutate(row.model)
+            sec = row.model.current_section
+            sec.note = text
+            sec.note_created = now if text else None
+            log.info("Note set on '%s': %r", row.model.name, text)
+            self._on_save(row.model)
+            row.refresh(now)
+
+    def _action_edit_time(self, row: TrackerRow) -> None:
+        dialog = Gtk.Dialog(
+            title="Adjust Time",
+            transient_for=self,
+            modal=True,
+        )
+        dialog.add_buttons(
+            Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL,
+            Gtk.STOCK_OK, Gtk.ResponseType.OK,
+        )
+        dialog.set_default_response(Gtk.ResponseType.OK)
+
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        box.set_margin_top(8)
+        box.set_margin_bottom(8)
+        box.set_margin_start(8)
+        box.set_margin_end(8)
+
+        entry = Gtk.Entry()
+        entry.set_placeholder_text("+7m, -30s, 1h 15m, 0:45")
+        entry.set_activates_default(True)
+        entry.set_width_chars(24)
+
+        error_label = Gtk.Label(xalign=0)
+        error_label.get_style_context().add_class("dim-label")
+
+        current = row.model.current_section.adjustment_seconds()
+        if current:
+            error_label.set_text(f"current adjustment: {format_duration(current)}")
+
+        box.pack_start(entry, False, False, 0)
+        box.pack_start(error_label, False, False, 0)
+        dialog.get_content_area().add(box)
+        dialog.show_all()
+
+        while True:
+            response = dialog.run()
+            if response != Gtk.ResponseType.OK:
+                dialog.destroy()
+                return
+            seconds = parse_duration(entry.get_text())
+            if seconds is None:
+                error_label.set_text("Cannot read that duration — try \"+7m\".")
+                entry.grab_focus()
+                continue
+            dialog.destroy()
+            break
+
+        now = datetime.now()
+        self._push_undo_mutate(row.model)
+        row.model.adjust(seconds, now)
+        log.info("Adjusted '%s' by %s", row.model.name, format_duration(seconds))
+        self._on_save(row.model)
+        row.refresh(now)
 
     def _action_new(self) -> None:
         dialog = Gtk.Dialog(
@@ -459,6 +583,18 @@ class TrackerWindow(Gtk.Window):
         if kv == Gdk.KEY_r:
             if self._rows:
                 self._action_reset(self._rows[self._selected_idx])
+            return True
+
+        # e — edit (adjust) time of selected
+        if kv == Gdk.KEY_e:
+            if self._rows:
+                self._action_edit_time(self._rows[self._selected_idx])
+            return True
+
+        # m — note on selected
+        if kv == Gdk.KEY_m:
+            if self._rows:
+                self._action_note(self._rows[self._selected_idx])
             return True
 
         # n — new tracker

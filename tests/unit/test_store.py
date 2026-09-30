@@ -159,3 +159,36 @@ def test_delete_removes_file(data_dir, simple_model):
 
 def test_delete_is_silent_when_file_missing(data_dir, simple_model):
     store.delete(simple_model)  # should not raise
+
+
+def test_adjustments_round_trip(tmp_path, monkeypatch):
+    monkeypatch.setattr(store, "DATA_DIR", tmp_path)
+    model = TrackerModel.new("adjusted")
+    model.adjust(420, datetime(2026, 1, 1, 12, 0, 0), reason="forgot to start")
+    model.adjust(-60, datetime(2026, 1, 1, 12, 5, 0))
+    store.save(model)
+
+    loaded, err = store.load(store.tracker_path(model))
+    assert err is None
+    adjustments = loaded.current_section.adjustments
+    assert [a.seconds for a in adjustments] == [420.0, -60.0]
+    assert adjustments[0].created == datetime(2026, 1, 1, 12, 0, 0)
+    assert adjustments[0].reason == "forgot to start"
+    assert adjustments[1].reason == ""
+
+
+def test_section_without_adjustments_key_loads(tmp_path, monkeypatch):
+    monkeypatch.setattr(store, "DATA_DIR", tmp_path)
+    path = tmp_path / "legacy.json"
+    path.write_text(json.dumps({
+        "id": "abc",
+        "name": "legacy",
+        "created": "2026-01-01T12:00:00",
+        "sections": [
+            {"id": "s1", "finished": False, "intervals": [], "last_start": None}
+        ],
+    }), encoding="utf-8")
+
+    loaded, err = store.load(path)
+    assert err is None
+    assert loaded.current_section.adjustments == []

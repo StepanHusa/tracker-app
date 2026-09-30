@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from tracker_app.model import Interval, Section, TrackerModel
+from tracker_app.model import Adjustment, Interval, Section, TrackerModel
 
 log = logging.getLogger(__name__)
 
@@ -43,6 +43,16 @@ def _section_to_dict(sec: Section) -> dict:
             for iv in sec.intervals
         ],
         "last_start": _dt_s(sec.last_start),
+        "note": sec.note,
+        "note_created": _dt_s(sec.note_created),
+        "adjustments": [
+            {
+                "seconds": a.seconds,
+                "created": _dt_s(a.created),
+                "reason": a.reason,
+            }
+            for a in sec.adjustments
+        ],
     }
 
 
@@ -51,11 +61,22 @@ def _section_from_dict(d: dict) -> Section:
         Interval(start=_dt(iv["start"]), end=_dt(iv["end"]))
         for iv in d.get("intervals", [])
     ]
+    adjustments = [
+        Adjustment(
+            seconds=float(a["seconds"]),
+            created=_dt(a["created"]),
+            reason=a.get("reason", ""),
+        )
+        for a in d.get("adjustments", [])
+    ]
     return Section(
         id=d["id"],
         finished=d["finished"],
         intervals=intervals,
         last_start=_dt(d.get("last_start")),
+        note=d.get("note", ""),
+        note_created=_dt(d.get("note_created")),
+        adjustments=adjustments,
     )
 
 

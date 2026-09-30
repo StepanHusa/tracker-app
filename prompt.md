@@ -17,6 +17,7 @@ A desktop popup-window app with multiple time trackers visible at once. Designed
 - `1`–`9` or arrow keys — select a tracker
 - `Space` — start/stop the selected tracker
 - `r` — reset the selected tracker
+- `e` — edit (adjust) the elapsed time of the selected tracker
 - `n` — create a new tracker
 - `Delete` / `d` — delete the selected tracker (with confirmation)
 - `F2` or double-click — rename the selected tracker
@@ -46,7 +47,14 @@ Each tracker file contains a JSON object:
           "end": "2026-03-20T11:45:00"
         }
       ],
-      "last_start": null
+      "last_start": null,
+      "adjustments": [
+        {
+          "seconds": 420,
+          "created": "2026-03-20T11:50:00",
+          "reason": ""
+        }
+      ]
     },
     {
       "id": "",
@@ -68,7 +76,8 @@ Each tracker file contains a JSON object:
 - **Intervals**: Each interval has a `start` and `end` timestamp, representing a continuous running period within a section.
 - **`last_start`**: Set to the current timestamp when the timer starts. Set to `null` when the timer stops (at which point a completed interval is added). If `last_start` is not null, the timer is currently running.
 - **`finished`**: All sections before the current one have `finished: true`. The active section has `finished: false`.
-- **Elapsed time** = sum of all interval durations in the current (non-finished) section + (now - last_start) if running.
+- **Adjustments**: Manual corrections of the elapsed time, recorded as their own events with a signed `seconds` value and a timestamp. They never modify intervals, so a running timer is unaffected. Entered as `+7m`, `-30s`, `1h 15m`, `0:45` or a bare number of minutes.
+- **Elapsed time** = sum of all interval durations in the current (non-finished) section + sum of its adjustments + (now - last_start) if running, clamped at 0.
 
 ## Open Questions (to discuss before implementation)
 - UI toolkit: tkinter vs GTK vs Qt?
