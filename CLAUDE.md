@@ -19,6 +19,7 @@ A desktop time tracker with a popup UI showing multiple named timers. Each track
 
 ## Data Storage
 - Data files: `~/.local/share/tracker_app/trackers/` (XDG-compliant)
+- Venv: `.venv` in the app dir (uv, `--system-site-packages` for apt PyGObject); `install.sh` / `uninstall.sh`
 - Each tracker: separate JSON file with history of sections (intervals between resets)
 
 ## Architecture
